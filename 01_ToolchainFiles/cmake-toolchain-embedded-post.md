@@ -83,17 +83,9 @@ Without this, try-compile runs may observe a different configuration than the ma
 
 ---
 
-## Configure-Time Checks on Bare-Metal Targets
-
-CMake validates compilers by building and executing test programs. This does not work for bare-metal targets.
-
-```cmake
-set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-```
-
----
-
 ## Search Rules
+
+When cross-compiling, CMake needs to know where to look for different types of files. The problem is that you have two entirely different ecosystems: the host (where you're building) and the target (where the code will run).
 
 ```cmake
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
@@ -102,12 +94,19 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 ```
 
-This separates:
+These settings control how CMake's `find_*` commands behave:
 
-* host tools
-* target headers and libraries
+* **`CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER`** - Never search in the target sysroot for executables. Programs like code generators, protocol buffer compilers, or custom build tools must run on the host, so CMake should only find them in standard host paths.
 
-Once `find_package()` is involved, this separation is no longer optional.
+* **`CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY`** - Only search in the target sysroot for libraries. You don't want CMake accidentally linking against host libraries (like `/usr/lib/libfoo.so`) when you need the ARM version.
+
+* **`CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY`** - Only search in the target sysroot for headers. Similar reasoning: host headers may have different APIs or assume different architectures.
+
+* **`CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY`** - Only search in the target sysroot for CMake package configuration files.
+
+Without these settings, you can end up with insidious build failures. For example, `find_library()` might locate your host's x86 version of a library, the linker accepts it during configuration checks, but then linking the final firmware binary fails with architecture mismatches. Or worse, it links successfully but the binary won't run because it was linked against the wrong ABI.
+
+Once you start using `find_package()` to locate dependencies, these settings become critical. The alternative is debugging why your embedded project is trying to link against `/usr/lib` instead of your cross-compiled libraries.
 
 ---
 
