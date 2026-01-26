@@ -28,29 +28,22 @@ set(CMAKE_SYSTEM_NAME Generic)
 set(CMAKE_SYSTEM_PROCESSOR arm)
 ```
 
-Setting `CMAKE_SYSTEM_NAME` explicitly marks the build as non-hosted. CMake then sets:
+Setting `CMAKE_SYSTEM_NAME` explicitly marks the build as non-hosted. CMake then sets `CMAKE_CROSSCOMPILING = TRUE`.
 
-```
-CMAKE_CROSSCOMPILING = TRUE
-```
-
-This variable is essential once a project contains both host-side and target-side logic. It allows CMake scripts to distinguish between:
-
-* tools that must run on the host
-* artifacts that are built only for the target
+This variable matters once a project contains both host-side and target-side logic. Without it, CMake scripts cannot reliably distinguish between tools that must run on the host and artifacts that are built only for the target.
 
 ---
 
 ## Compiler Selection Without Installation Assumptions
 
-The toolchain file selects the **compiler family**, but must not assume that the compiler is installed system-wide or available in `PATH`. That assumption does not survive CI or containerized builds.
+The toolchain file selects the compiler family, but should not assume the compiler is installed system-wide or available in `PATH`. That assumption breaks down in CI pipelines and containerized builds.
 
 ```cmake
 set(TIARMCLANG_TOOLCHAIN_ROOT "" CACHE PATH
     "Path to the TI ARM Clang toolchain root")
 ```
 
-This cache variable is provided by the **higher-level build context** (developer environment, CI, or container setup). The toolchain file does not set a default location. If the path is not provided, configuration will fail when searching for the compiler.
+This cache variable is provided by the higher-level build context—developer environment, CI script, or container setup. The toolchain file does not set a default location. If the path is missing, configuration fails immediately when searching for the compiler.
 
 Compiler executables are resolved explicitly:
 
@@ -70,22 +63,32 @@ find_program(CMAKE_CXX_COMPILER
 )
 ```
 
-`NO_DEFAULT_PATH` prevents searching in system paths. If the toolchain is missing from the specified location, configuration fails immediately. Silent fallback to a different compiler is avoided.
+`NO_DEFAULT_PATH` prevents CMake from searching system paths. If the toolchain is not where you said it would be, configuration fails. No silent fallback to a different compiler.
 
-Any **cache variables** that are required during try-compile must be explicitly forwarded:
+Cache variables required during try-compile must be explicitly forwarded:
 
 ```cmake
 list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
      TIARMCLANG_TOOLCHAIN_ROOT)
 ```
 
-Without this, try-compile runs may observe a different configuration than the main build, which is difficult to diagnose.
+Without this, try-compile runs observe a different configuration than the main build. This mismatch is difficult to diagnose once it happens.
+
+---
+
+## Configure-Time Checks on Bare-Metal Targets
+
+CMake validates compilers by building and executing test programs. This does not work for bare-metal targets.
+
+```cmake
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+```
 
 ---
 
 ## Search Rules
 
-When cross-compiling, CMake needs to know where to look for different types of files. The problem is that you have two entirely different ecosystems: the host (where you're building) and the target (where the code will run).
+When cross-compiling, CMake needs to know where to look for different types of files. You have two separate ecosystems: the host (where the build runs) and the target (where the firmware runs).
 
 ```cmake
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
@@ -94,19 +97,19 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 ```
 
-These settings control how CMake's `find_*` commands behave:
+These settings control CMake's `find_*` commands:
 
-* **`CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER`** - Never search in the target sysroot for executables. Programs like code generators, protocol buffer compilers, or custom build tools must run on the host, so CMake should only find them in standard host paths.
+* **`CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER`** - Never search the target sysroot for executables. Programs like code generators, protocol buffer compilers, or custom build tools run on the host, so CMake should only find them in host paths.
 
-* **`CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY`** - Only search in the target sysroot for libraries. You don't want CMake accidentally linking against host libraries (like `/usr/lib/libfoo.so`) when you need the ARM version.
+* **`CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY`** - Only search the target sysroot for libraries. Without this, CMake might link against your host's x86 version of a library when you need the ARM version.
 
-* **`CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY`** - Only search in the target sysroot for headers. Similar reasoning: host headers may have different APIs or assume different architectures.
+* **`CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY`** - Only search the target sysroot for headers. Host headers may have different APIs or assume different architectures.
 
-* **`CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY`** - Only search in the target sysroot for CMake package configuration files.
+* **`CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY`** - Only search the target sysroot for CMake package configuration files.
 
-Without these settings, you can end up with insidious build failures. For example, `find_library()` might locate your host's x86 version of a library, the linker accepts it during configuration checks, but then linking the final firmware binary fails with architecture mismatches. Or worse, it links successfully but the binary won't run because it was linked against the wrong ABI.
+Without these settings, you get build failures that are hard to diagnose. `find_library()` locates your host's x86 version of a library. The linker may accept it during configuration checks, but linking the final firmware binary fails with architecture mismatches. Or worse: it links successfully, but the binary won't run because it was linked against the wrong ABI.
 
-Once you start using `find_package()` to locate dependencies, these settings become critical. The alternative is debugging why your embedded project is trying to link against `/usr/lib` instead of your cross-compiled libraries.
+Once you use `find_package()` to locate dependencies, these settings stop being optional. The alternative is debugging why your embedded project decided `/usr/lib` was a reasonable place to find ARM libraries.
 
 ---
 
@@ -144,29 +147,29 @@ At this point, **no platform is specified**.
 
 ---
 
-## Mind the Gap: No Platform, No Problem?
+## The Problem: Building Without Platform Flags
 
-Here's something that might surprise you: compiling and linking an executable with this minimal toolchain file will work just fine. No warnings. No errors. The compiler happily produces a binary.
+Here's the issue: you can compile and link an executable with this minimal toolchain file. No warnings. No errors. The compiler produces a binary.
 
-But here's the catch: what platform is that binary actually built for? The answer depends on compiler defaults and internal driver configuration—things that are not explicit in your build system and definitely shouldn't be treated as a contract.
+What platform is that binary built for? That depends on compiler defaults and internal driver configuration. This is not explicit in the build system, and it should not be treated as a contract.
 
-This matters because if you decide to keep platform-specific flags outside the toolchain file, you're opening a door to a dangerous failure mode. A developer can forget to explicitly link an executable against the platform target, the build succeeds, you flash it, and then... things break. Or worse, they break intermittently.
+This matters if you keep platform-specific flags outside the toolchain file. A developer forgets to explicitly link an executable against the platform target. The build succeeds. You flash the device. Then things fail—possibly immediately, possibly intermittently, possibly only under specific conditions.
 
-This isn't a hypothetical problem. It's a real trap that's easy to fall into.
+This is not a theoretical problem. It happens.
 
-The good news? This can be overcome. In fact, there are two coherent approaches to handling platform configuration in embedded CMake projects. Both have trade-offs, and we'll explore them in detail. The key is understanding which approach fits your project and making the failure modes explicit.
+There are two coherent approaches to handling platform configuration. Both work. Both have trade-offs. The critical part is understanding which failure modes each approach makes impossible, and which ones require explicit discipline.
 
 ---
 
 ## Two Structurally Valid Approaches
 
-There are two coherent ways to structure platform configuration. Neither is universally better. Each makes a different class of mistakes impossible.
+There are two ways to structure platform configuration. Neither is universally better. Each makes a different class of mistakes impossible.
 
 ---
 
 ## Approach A: Platform Configuration Inside the Toolchain File
 
-This is the most commonly used approach in embedded projects. If you've worked with embedded CMake builds before, you've likely seen this structure.
+This is the more common approach. If you've worked with embedded CMake builds, you've probably seen this structure.
 
 ### Description
 
@@ -190,7 +193,7 @@ set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT}")
 * The project targets **exactly one platform**
 * There is no plan to support additional platforms later
 * All firmware artifacts share the same architecture
-* It is acceptable to reconfigure the build directory when flags change
+* Reconfiguring the build when flags change is acceptable
 
 ### Consequences
 
@@ -200,9 +203,9 @@ set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT}")
 
 ### Failure mode
 
-Platform changes require careful rebuild discipline. Because toolchain files are evaluated early and their values are aggressively cached, changing architecture flags often means you need to invalidate the CMake cache. In practice, this usually means deleting the entire build directory and starting from scratch.
+Platform changes require careful rebuild discipline. Toolchain files are evaluated early, and their values are aggressively cached. Changing architecture flags usually means deleting the build directory and reconfiguring from scratch.
 
-This makes platform experimentation time-consuming. Want to test a different CPU variant or FPU configuration? Be prepared for the full clean → reconfigure → rebuild loop. For large projects, this can mean waiting several minutes just to test a flag change.
+This makes platform experimentation time-consuming. Testing a different CPU variant or FPU configuration requires a full clean → reconfigure → rebuild cycle. For large projects, that can mean several minutes per iteration.
 
 ### Full Example
 
@@ -312,18 +315,17 @@ Executables must link against this target.
 
 * Platform configuration is explicit and composable
 * Multiple platforms can coexist in one build
-* Architecture changes propagate naturally through dependencies
+* Architecture changes propagate through dependencies without reconfiguration
 
 ### Failure mode
 
-* An executable can be built without platform flags if not explicitly bound
-* The build may succeed and produce a flashable binary that is not built for the intended target
+An executable can be built without platform flags if it is not explicitly bound to a platform target. The build succeeds. The binary may flash successfully. The error appears only at runtime, possibly intermittently.
 
 This approach requires **explicit enforcement** at the build-system level.
 
 ### Enforcement Mechanism: Helper Functions
 
-One practical way to enforce platform binding is to wrap `add_library()` and `add_executable()` with helper functions that automatically link the platform target.
+One way to enforce platform binding is to wrap `add_library()` and `add_executable()` with helper functions that automatically link the platform target.
 
 Create a platform-specific module file (e.g., `AM243xPlatform.cmake`):
 
@@ -379,13 +381,13 @@ With this pattern:
 
 * Every target automatically gets platform flags linked PRIVATE
 * The function name makes the target platform explicit
-* Forgetting platform flags becomes impossible **if the team discipline is to never use `add_library()` or `add_executable()` directly**
+* Forgetting platform flags becomes harder
 
-This enforcement relies on code review or linting to catch direct usage of the wrapped functions. It's not bulletproof, but it makes the failure mode much less likely and provides clear intent in the build scripts.
+This still depends on team discipline—code reviews or linting must catch direct usage of `add_library()` or `add_executable()`. It's not bulletproof, but it reduces the failure mode and makes intent explicit.
 
 ### Full Example
 
-The toolchain file for Approach B is nearly identical to the minimal toolchain file shown earlier in this post. This is intentional and good—the toolchain file focuses purely on compiler setup without platform-specific concerns:
+The toolchain file for Approach B is nearly identical to the minimal toolchain file shown earlier. This is intentional—the toolchain file focuses purely on compiler setup without platform-specific concerns:
 
 ```cmake
 # cmake/toolchains/tiarmclang.toolchain.cmake
@@ -438,7 +440,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 # Platform configuration is handled via INTERFACE targets
 ```
 
-Notice the key difference from Approach A: no `CMAKE_C_FLAGS_INIT` or `CMAKE_CXX_FLAGS_INIT`. Platform configuration lives elsewhere.
+The difference from Approach A: no `CMAKE_C_FLAGS_INIT` or `CMAKE_CXX_FLAGS_INIT`. Platform configuration lives in a separate module.
 
 A complete, runnable example demonstrating Approach B with helper function enforcement can be found in the `01_ToolchainFiles/ApproachB_PlatformAsTarget` directory of the [EmbenautsEmbeddedCMakeBlog repository](https://github.com/KKoovalsky/EmbenautsEmbeddedCMakeBlog).
 
@@ -453,21 +455,16 @@ For detailed build instructions and an explanation of the enforcement mechanism,
 
 ## The Invalid Middle Ground
 
-> Toolchain without platform
->
-> * platform flags outside the toolchain
-> * no enforcement
+A toolchain file without platform flags, combined with platform flags outside the toolchain but no enforcement mechanism, is unsafe.
 
-This configuration is unsafe.
+The compiler produces a binary. The build system does not complain. The error appears only after flashing—possibly immediately, possibly under load, possibly only on certain hardware revisions.
 
-The compiler will produce a binary. The build system will not complain. The error appears only after flashing, or worse, intermittently.
-
-If platform configuration is not in the toolchain, **the build system must make forgetting it impossible**.
+If platform configuration is not in the toolchain file, the build system must make forgetting it structurally difficult or impossible. Helper functions are one approach. Build-time validation is another. The specific mechanism matters less than acknowledging the failure mode exists.
 
 ---
 
 ## Closing Note
 
-Both approaches are used successfully in production systems. The important part is not which one is chosen, but that the failure modes are understood and made explicit.
+Both approaches work in production systems. The critical part is not which one you choose, but that you understand the failure modes and make them explicit.
 
-A build system should not allow producing artifacts whose intended execution environment is undefined.
+A build system should not allow producing artifacts whose intended execution environment is undefined. Whether that enforcement is implicit (Approach A) or requires active discipline (Approach B) depends on your project's constraints and team structure.
