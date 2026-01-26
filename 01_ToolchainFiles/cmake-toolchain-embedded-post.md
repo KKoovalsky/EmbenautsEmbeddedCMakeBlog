@@ -121,22 +121,18 @@ set(CMAKE_SYSTEM_PROCESSOR arm)
 set(TIARMCLANG_TOOLCHAIN_ROOT "" CACHE PATH
     "Path to the TI ARM Clang toolchain root")
 
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
+     TIARMCLANG_TOOLCHAIN_ROOT)
+
 find_program(CMAKE_C_COMPILER
   NAMES tiarmclang
   HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
   REQUIRED
 )
 
-find_program(CMAKE_CXX_COMPILER
-  NAMES tiarmclang++
-  HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
-  REQUIRED
-)
+set(CMAKE_CXX_COMPILER ${CMAKE_C_COMPILER})
 
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
-
-list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
-     TIARMCLANG_TOOLCHAIN_ROOT)
 
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
@@ -324,6 +320,134 @@ Executables must link against this target.
 * The build may succeed and produce a flashable binary that is not built for the intended target
 
 This approach requires **explicit enforcement** at the build-system level.
+
+### Enforcement Mechanism: Helper Functions
+
+One practical way to enforce platform binding is to wrap `add_library()` and `add_executable()` with helper functions that automatically link the platform target.
+
+Create a platform-specific module file (e.g., `AM243xPlatform.cmake`):
+
+```cmake
+# AM243x Platform Configuration
+
+# Platform-specific flags for AM243x (Cortex-R5F)
+set(AM243X_PLATFORM_FLAGS
+    -mcpu=cortex-r5
+    -mfloat-abi=hard
+    -mfpu=vfpv3-d16
+)
+
+# Define platform configuration as an INTERFACE library
+add_library(platform_am243x INTERFACE)
+
+target_compile_options(platform_am243x INTERFACE
+  ${AM243X_PLATFORM_FLAGS}
+)
+
+target_link_options(platform_am243x INTERFACE
+  ${AM243X_PLATFORM_FLAGS}
+)
+
+# Helper function to add a library with platform flags automatically linked
+function(am243x_add_library target_name)
+    add_library(${target_name} ${ARGN})
+    target_link_libraries(${target_name} PRIVATE platform_am243x)
+endfunction()
+
+# Helper function to add an executable with platform flags automatically linked
+function(am243x_add_executable target_name)
+    add_executable(${target_name} ${ARGN})
+    target_link_libraries(${target_name} PRIVATE platform_am243x)
+endfunction()
+```
+
+Include this module in your `CMakeLists.txt`:
+
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(MyProject C CXX)
+
+# Include platform-specific configuration
+include(${CMAKE_CURRENT_SOURCE_DIR}/AM243xPlatform.cmake)
+
+# Use the helper functions instead of add_library/add_executable
+am243x_add_library(hello STATIC src/hello.c src/hello.cpp)
+am243x_add_executable(main src/main.cpp)
+```
+
+With this pattern:
+
+* Every target automatically gets platform flags linked PRIVATE
+* The function name makes the target platform explicit
+* Forgetting platform flags becomes impossible **if the team discipline is to never use `add_library()` or `add_executable()` directly**
+
+This enforcement relies on code review or linting to catch direct usage of the wrapped functions. It's not bulletproof, but it makes the failure mode much less likely and provides clear intent in the build scripts.
+
+### Full Example
+
+The toolchain file for Approach B is nearly identical to the minimal toolchain file shown earlier in this post. This is intentional and good—the toolchain file focuses purely on compiler setup without platform-specific concerns:
+
+```cmake
+# cmake/toolchains/tiarmclang.toolchain.cmake
+# Approach B: Platform configuration outside the toolchain file
+
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+
+# Toolchain root path - provided by the build context
+set(TIARMCLANG_TOOLCHAIN_ROOT "" CACHE PATH
+    "Path to the TI ARM Clang toolchain root")
+
+# Forward cache variables to try-compile runs
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
+     TIARMCLANG_TOOLCHAIN_ROOT)
+
+# Validate toolchain path
+if(TIARMCLANG_TOOLCHAIN_ROOT STREQUAL "")
+    message(FATAL_ERROR
+        "TIARMCLANG_TOOLCHAIN_ROOT not defined! Set it via -DTIARMCLANG_TOOLCHAIN_ROOT=<path>")
+endif()
+
+if(NOT EXISTS ${TIARMCLANG_TOOLCHAIN_ROOT})
+    message(FATAL_ERROR
+        "TIARMCLANG_TOOLCHAIN_ROOT path '${TIARMCLANG_TOOLCHAIN_ROOT}' does not exist!")
+endif()
+
+# Find compiler executable
+# tiarmclang handles both C and C++ compilation
+find_program(CMAKE_C_COMPILER
+  NAMES tiarmclang
+  HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
+  NO_DEFAULT_PATH
+  REQUIRED
+)
+
+# Use the same compiler for C++
+set(CMAKE_CXX_COMPILER ${CMAKE_C_COMPILER})
+
+# Configure try-compile for bare-metal targets
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+# Search rules for cross-compilation
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+# NOTE: No platform-specific flags here!
+# Platform configuration is handled via INTERFACE targets
+```
+
+Notice the key difference from Approach A: no `CMAKE_C_FLAGS_INIT` or `CMAKE_CXX_FLAGS_INIT`. Platform configuration lives elsewhere.
+
+A complete, runnable example demonstrating Approach B with helper function enforcement can be found in the `01_ToolchainFiles/ApproachB_PlatformAsTarget` directory of the [EmbenautsEmbeddedCMakeBlog repository](https://github.com/KKoovalsky/EmbenautsEmbeddedCMakeBlog).
+
+The example includes:
+- The minimal toolchain file shown above
+- Platform configuration module (`AM243xPlatform.cmake`) with helper functions
+- Demonstration of how targets automatically receive platform flags through the helpers
+
+For detailed build instructions and an explanation of the enforcement mechanism, refer to the `README.md` in the example directory.
 
 ---
 
