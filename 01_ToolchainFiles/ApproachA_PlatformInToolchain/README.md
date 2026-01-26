@@ -15,17 +15,14 @@ The toolchain file sets `CMAKE_C_FLAGS_INIT`, `CMAKE_CXX_FLAGS_INIT`, and `CMAKE
 ## Building
 
 ```bash
-# Create build directory
-mkdir build
-cd build
 
 # Configure with the toolchain file
-cmake .. \
-  -DCMAKE_TOOLCHAIN_FILE=../tiarmclang-cortex-r5.toolchain.cmake \
+cmake -B build/ -S . \ 
+  -DCMAKE_TOOLCHAIN_FILE=$(pwd)/tiarmclang-cortex-r5.toolchain.cmake \
   -DTIARMCLANG_TOOLCHAIN_ROOT=/path/to/ti-cgt-armllvm
 
 # Build
-cmake --build .
+cmake --build build/
 ```
 
 ## What Happens

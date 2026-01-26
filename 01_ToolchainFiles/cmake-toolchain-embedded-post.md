@@ -186,8 +186,7 @@ Example (Cortex-R illustration):
 set(CMAKE_C_FLAGS_INIT
     "-mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16")
 
-set(CMAKE_CXX_FLAGS_INIT
-    "-mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16")
+set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT}")
 ```
 
 ### When this approach is appropriate
@@ -208,6 +207,69 @@ set(CMAKE_CXX_FLAGS_INIT
 Platform changes require careful rebuild discipline. Because toolchain files are evaluated early and their values are aggressively cached, changing architecture flags often means you need to invalidate the CMake cache. In practice, this usually means deleting the entire build directory and starting from scratch.
 
 This makes platform experimentation time-consuming. Want to test a different CPU variant or FPU configuration? Be prepared for the full clean → reconfigure → rebuild loop. For large projects, this can mean waiting several minutes just to test a flag change.
+
+### Full Example
+
+Here's a complete toolchain file implementing Approach A with Cortex-R5 platform flags. The flags used (`-mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16`) are an example set that could match TI MCU families like AM263 / AM263P / AM261x, AM64x / AM62x (R5F cores), or TMS570LC43x (Hercules) devices:
+
+```cmake
+# cmake/toolchains/tiarmclang-cortex-r5.toolchain.cmake
+# Approach A: Platform configuration inside the toolchain file
+
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+
+# Toolchain root path - provided by the build context
+set(TIARMCLANG_TOOLCHAIN_ROOT "" CACHE PATH
+    "Path to the TI ARM Clang toolchain root")
+
+# Forward cache variables to try-compile runs
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
+     TIARMCLANG_TOOLCHAIN_ROOT)
+
+# Validate toolchain path
+if(TIARMCLANG_TOOLCHAIN_ROOT STREQUAL "")
+    message(FATAL_ERROR
+        "TIARMCLANG_TOOLCHAIN_ROOT not defined! Set it via -DTIARMCLANG_TOOLCHAIN_ROOT=<path>")
+endif()
+
+if(NOT EXISTS ${TIARMCLANG_TOOLCHAIN_ROOT})
+    message(FATAL_ERROR
+        "TIARMCLANG_TOOLCHAIN_ROOT path '${TIARMCLANG_TOOLCHAIN_ROOT}' does not exist!")
+endif()
+
+# Find compiler executable
+# tiarmclang handles both C and C++ compilation
+find_program(CMAKE_C_COMPILER
+  NAMES tiarmclang
+  HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
+  NO_DEFAULT_PATH
+  REQUIRED
+)
+
+# Use the same compiler for C++
+set(CMAKE_CXX_COMPILER ${CMAKE_C_COMPILER})
+
+# Configure try-compile for bare-metal targets
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+# Search rules for cross-compilation
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
+
+# Platform-specific flags for Cortex-R5
+# These flags are applied to ALL targets in the project
+set(CMAKE_C_FLAGS_INIT
+    "-mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16")
+
+set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT}")
+
+# Linker flags are not needed here - C/C++ flags are forwarded to the linker
+```
+
+A complete, runnable example can be found in the `01_ToolchainFiles/ApproachA_PlatformInToolchain` directory of the [EmbenautsEmbeddedCMakeBlog repository](https://github.com/KKoovalsky/EmbenautsEmbeddedCMakeBlog). The example includes a simple project with a static library and executable demonstrating how all targets automatically receive the platform flags. For detailed build instructions, refer to the `README.md` in the example directory.
 
 ---
 

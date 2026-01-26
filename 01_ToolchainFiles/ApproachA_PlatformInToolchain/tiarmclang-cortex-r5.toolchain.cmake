@@ -29,6 +29,7 @@ find_program(CMAKE_C_COMPILER
   REQUIRED
 )
 
+# For tiarmclang, C and C++ compilers are the same executable
 set(CMAKE_CXX_COMPILER ${CMAKE_C_COMPILER})
 
 # Configure try-compile for bare-metal targets
@@ -45,8 +46,4 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 set(CMAKE_C_FLAGS_INIT
     "-mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16")
 
-set(CMAKE_CXX_FLAGS_INIT
-    "-mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16")
-
-set(CMAKE_EXE_LINKER_FLAGS_INIT
-    "-mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16")
+set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT}")
