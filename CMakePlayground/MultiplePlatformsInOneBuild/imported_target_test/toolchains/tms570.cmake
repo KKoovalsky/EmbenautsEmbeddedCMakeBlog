@@ -1,0 +1,31 @@
+# Toolchain file for TMS570 - actual cross-compilation with tiarmclang
+
+set(PLATFORM_ID "tms570" CACHE STRING "Target platform identifier")
+
+set(CMAKE_SYSTEM_NAME Generic)
+set(CMAKE_SYSTEM_PROCESSOR arm)
+
+set(TIARMCLANG_TOOLCHAIN_ROOT "" CACHE PATH
+    "Path to the TI ARM Clang toolchain root")
+
+list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES TIARMCLANG_TOOLCHAIN_ROOT)
+
+if(TIARMCLANG_TOOLCHAIN_ROOT STREQUAL "")
+    message(FATAL_ERROR "TIARMCLANG_TOOLCHAIN_ROOT not defined!")
+endif()
+
+find_program(CMAKE_C_COMPILER
+    NAMES tiarmclang
+    HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
+    NO_DEFAULT_PATH
+    REQUIRED
+)
+
+set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+
+# TMS570 platform flags (Cortex-R4F)
+set(CMAKE_C_FLAGS_INIT "-mcpu=cortex-r4 -mfloat-abi=hard -mfpu=vfpv3-d16")
