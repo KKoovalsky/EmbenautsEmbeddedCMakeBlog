@@ -8,7 +8,34 @@
 > * **Approach A:** platform flags inside the toolchain file (implicit but enforced)
 > * **Approach B:** platform flags outside the toolchain file (explicit but requires enforcement)
 >
-> This post focuses on the practical wrappers you'll need in either case.
+> This post focuses on creating **minimal wrappers** that produce a binary runnable on your device, and on **safety mechanisms** to avoid common mistakes.
+>
+> At the end of the post, we'll extend the minimal wrapper with useful extras: map files, binary conversion, size reports.
+
+---
+
+## Breaking the "one project = one executable" mindset
+
+Many embedded projects treat CMake like an IDE project file: one build produces one firmware binary. That's it.
+
+This mindset is inherited from IDE-based workflows (Code Composer Studio, Keil, IAR) where creating a new executable means creating a new project, duplicating configuration, and maintaining parallel build setups.
+
+CMake doesn't have this limitation. A single CMake project can produce:
+
+* the main firmware
+* hardware abstraction layer (HAL) unit tests
+* peripheral driver test executables
+* hardware validation tests (run on real hardware, test specific functionality)
+* integration test binaries
+* bootloader variants
+* factory test firmware
+* diagnostic tools
+* example applications for each peripheral
+* benchmark executables
+
+Without wrappers, each of these would require copy-pasting linker script paths, platform flags, and post-build steps. With wrappers, adding a new executable is one line.
+
+This is why wrappers matter: they make multiple executables practical.
 
 ---
 
@@ -22,16 +49,11 @@ If you're reading this, you probably have:
 
 And you're wondering: "Do I really need wrappers?"
 
-**Yes — but only for `add_executable`.** At this stage, you don't need to wrap `add_library()`.
+**Yes — but only for `add_executable()`.** At this stage, you don't need to wrap `add_library()`.
 
-Why? Because while the toolchain file handles compile and link *flags*, it doesn't handle:
+Why? Because while the toolchain file handles compile and link *flags*, it doesn't handle **linker scripts** — the memory layout contract that makes your binary actually run on the device.
 
-* **linker scripts** — the memory layout contract
-* **map files** — essential for debugging and size analysis
-* **output format conversion** — `.elf` to `.bin`, `.hex`, `.srec`
-* **post-build steps** — checksums, signing, size reports
-
-These are per-executable concerns. A wrapper centralizes them.
+This is a per-executable concern. A wrapper centralizes it.
 
 ---
 
@@ -61,38 +83,157 @@ The toolchain file runs once, early, for the whole build. It cannot know:
 
 These are **target-specific** concerns.
 
-### The minimal executable wrapper
+### The linker script as an INTERFACE target
+
+The linker script deserves its own target. Why?
+
+1. **Dependency tracking** — CMake doesn't automatically relink when a linker script changes. You need to tell it.
+2. **Reusability** — multiple executables can link the same linker script target
+3. **Encapsulation** — linker flags stay with the linker script, not scattered in wrappers
+
+```cmake
+# cmake/DeviceLinkerScript.cmake
+
+set(DEVICE_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker/device.ld")
+
+add_library(device_linker_script INTERFACE)
+
+target_link_options(device_linker_script INTERFACE
+    "-Wl,-T${DEVICE_LINKER_SCRIPT}"
+)
+
+# Critical: relink when linker script changes
+set_property(TARGET device_linker_script APPEND PROPERTY
+    INTERFACE_LINK_DEPENDS "${DEVICE_LINKER_SCRIPT}"
+)
+```
+
+The `INTERFACE_LINK_DEPENDS` property is the key. Without it, modifying the linker script does nothing — CMake thinks the executable is up to date. With it, any change to the `.ld` file triggers a relink.
+
+### The executable wrapper
+
+The wrapper links the linker script target automatically:
 
 ```cmake
 # cmake/EmbeddedExecutable.cmake
 
+include(${CMAKE_CURRENT_LIST_DIR}/DeviceLinkerScript.cmake)
+
 function(embedded_add_executable target_name)
     add_executable(${target_name} ${ARGN})
+    target_link_libraries(${target_name} PRIVATE device_linker_script)
 
-    # Linker script
-    target_link_options(${target_name} PRIVATE
-        "-Wl,-T${CMAKE_SOURCE_DIR}/linker/device.ld"
-    )
-
-    # Map file (named after the target)
-    target_link_options(${target_name} PRIVATE
-        "-Wl,-Map=$<TARGET_FILE_DIR:${target_name}>/${target_name}.map"
-    )
+    # Mark this executable as having a proper linker script
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_LINKER_SCRIPT TRUE)
 endfunction()
 ```
 
-Usage:
+That's the minimum. The linker script is applied, and changes to it trigger a relink.
+
+### The safety net: catching naked executables
+
+What if someone uses `add_executable()` directly, bypassing the wrapper? The build succeeds, but the binary uses the compiler's default linker script — which almost certainly doesn't match your device's memory layout.
+
+Add a validation function that runs at the end of configuration:
+
+```cmake
+# cmake/ValidateLinkerScripts.cmake
+
+function(emb_validate_all_executables_have_linker_script)
+    get_property(targets DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY BUILDSYSTEM_TARGETS)
+
+    foreach(target IN LISTS targets)
+        get_target_property(target_type ${target} TYPE)
+        if(NOT target_type STREQUAL "EXECUTABLE")
+            continue()
+        endif()
+
+        get_target_property(has_linker_script ${target} EMB_HAS_LINKER_SCRIPT)
+        if(NOT has_linker_script)
+            message(FATAL_ERROR
+                "Executable '${target}' does not have a linker script.\n"
+                "Use embedded_add_executable() instead of add_executable().\n"
+                "Without a linker script, the binary will use compiler defaults "
+                "and likely won't run on your device.")
+        endif()
+    endforeach()
+endfunction()
+```
+
+Call it at the end of your root `CMakeLists.txt`:
+
+```cmake
+# CMakeLists.txt
+
+cmake_minimum_required(VERSION 3.20)
+project(MyFirmware C)
+
+include(cmake/EmbeddedExecutable.cmake)
+include(cmake/ValidateLinkerScripts.cmake)
+
+add_library(mylib STATIC src/mylib.c)
+
+embedded_add_executable(firmware src/main.c)
+target_link_libraries(firmware PRIVATE mylib)
+
+# Validate at the end — catches any naked add_executable() calls
+emb_validate_all_executables_have_linker_script()
+```
+
+Now if someone adds:
+
+```cmake
+add_executable(test_app src/test.c)  # Forgot the wrapper!
+```
+
+Configuration fails immediately:
+
+```
+CMake Error at cmake/ValidateLinkerScripts.cmake:15 (message):
+  Executable 'test_app' does not have a linker script.
+  Use embedded_add_executable() instead of add_executable().
+  Without a linker script, the binary will use compiler defaults and likely
+  won't run on your device.
+```
+
+No silent failures. No binaries with wrong memory layouts.
+
+### Usage
 
 ```cmake
 include(cmake/EmbeddedExecutable.cmake)
 
-add_library(mylib STATIC src/mylib.c)  # No wrapper needed
+# Libraries don't need wrappers
+add_library(mylib STATIC src/mylib.c)
 
+# Executables get the linker script automatically
 embedded_add_executable(firmware src/main.c)
 target_link_libraries(firmware PRIVATE mylib)
 ```
 
-### Why linker scripts belong in a wrapper
+### Why this structure matters
+
+**Without `INTERFACE_LINK_DEPENDS`:**
+
+```
+$ vim linker/device.ld   # change memory regions
+$ make
+$ # nothing happens — CMake thinks firmware is up to date
+$ # you flash the old binary
+$ # you debug for an hour wondering why your changes didn't work
+```
+
+**With `INTERFACE_LINK_DEPENDS`:**
+
+```
+$ vim linker/device.ld
+$ make
+[1/1] Linking CXX executable firmware.elf
+```
+
+The relink happens automatically. No stale binaries.
+
+### Why linker scripts belong in a target
 
 A linker script defines the memory layout:
 
@@ -103,11 +244,12 @@ A linker script defines the memory layout:
 
 Without a linker script, the linker uses defaults that make no sense for your MCU. The binary might link, but it won't run.
 
-Putting the linker script in a wrapper means:
+Modeling the linker script as an INTERFACE target means:
 
-* you cannot forget it
+* you cannot forget it (the wrapper links it automatically)
 * every executable gets the correct memory layout
-* changing the linker script is a one-line change
+* changing the linker script triggers a relink
+* multiple executables share the same linker script target
 
 ### Why map files belong in a wrapper
 
@@ -125,47 +267,6 @@ For embedded development, this is not optional debug output. It's how you:
 * optimize size (find the bloat)
 
 Generating it automatically in the wrapper means it's always there when you need it.
-
-### Extended wrapper: output conversion and size report
-
-Most workflows need more than just the ELF:
-
-```cmake
-function(embedded_add_executable target_name)
-    add_executable(${target_name} ${ARGN})
-
-    # Linker script
-    target_link_options(${target_name} PRIVATE
-        "-Wl,-T${CMAKE_SOURCE_DIR}/linker/device.ld"
-    )
-
-    # Map file
-    target_link_options(${target_name} PRIVATE
-        "-Wl,-Map=$<TARGET_FILE_DIR:${target_name}>/${target_name}.map"
-    )
-
-    # Generate .bin for flashing
-    add_custom_command(TARGET ${target_name} POST_BUILD
-        COMMAND ${CMAKE_OBJCOPY} -O binary
-            $<TARGET_FILE:${target_name}>
-            $<TARGET_FILE_DIR:${target_name}>/${target_name}.bin
-        COMMENT "Generating ${target_name}.bin"
-    )
-
-    # Print size summary
-    add_custom_command(TARGET ${target_name} POST_BUILD
-        COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${target_name}>
-        COMMENT "Size of ${target_name}:"
-    )
-endfunction()
-```
-
-Now every firmware build:
-
-1. Links with the correct memory layout
-2. Produces a map file for debugging
-3. Generates a flashable binary
-4. Shows you the size
 
 ### Why you don't need `add_library` wrappers in Case 1
 
@@ -223,24 +324,34 @@ function(am243x_add_library target_name)
 endfunction()
 ```
 
+### Linker script target for AM243x
+
+Same pattern as Case 1 — the linker script gets its own target with `INTERFACE_LINK_DEPENDS`:
+
+```cmake
+# cmake/Platform_AM243x.cmake (continued)
+
+set(AM243X_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker/am243x.ld")
+
+add_library(linker_am243x INTERFACE)
+target_link_options(linker_am243x INTERFACE "-Wl,-T${AM243X_LINKER_SCRIPT}")
+set_property(TARGET linker_am243x APPEND PROPERTY
+    INTERFACE_LINK_DEPENDS "${AM243X_LINKER_SCRIPT}")
+```
+
 ### Executable wrapper for Approach B
 
 ```cmake
 function(am243x_add_executable target_name)
     add_executable(${target_name} ${ARGN})
-    target_link_libraries(${target_name} PRIVATE platform_am243x)
+    target_link_libraries(${target_name} PRIVATE platform_am243x linker_am243x)
 
-    # Linker script
-    target_link_options(${target_name} PRIVATE
-        "-Wl,-T${CMAKE_SOURCE_DIR}/linker/am243x.ld"
-    )
-
-    # Map file
-    target_link_options(${target_name} PRIVATE
-        "-Wl,-Map=$<TARGET_FILE_DIR:${target_name}>/${target_name}.map"
-    )
+    # Safety net (same pattern as Case 1)
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_LINKER_SCRIPT TRUE)
 endfunction()
 ```
+
+The same `emb_validate_all_executables_have_linker_script()` function from Case 1 catches any naked `add_executable()` calls.
 
 ### Usage
 
@@ -270,7 +381,9 @@ Each combination needs:
 * its own linker script
 * possibly different post-build steps
 
-### Platform targets
+### Platform and linker script targets
+
+Each platform module defines both the platform flags and the linker script target:
 
 ```cmake
 # cmake/Platform_AM243x.cmake
@@ -280,79 +393,77 @@ target_compile_options(platform_am243x INTERFACE
 target_link_options(platform_am243x INTERFACE
     -mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16)
 
+set(AM243X_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker/am243x.ld")
+add_library(linker_am243x INTERFACE)
+target_link_options(linker_am243x INTERFACE "-Wl,-T${AM243X_LINKER_SCRIPT}")
+set_property(TARGET linker_am243x APPEND PROPERTY
+    INTERFACE_LINK_DEPENDS "${AM243X_LINKER_SCRIPT}")
+```
+
+```cmake
 # cmake/Platform_TMS570.cmake
 add_library(platform_tms570 INTERFACE)
 target_compile_options(platform_tms570 INTERFACE
     -mcpu=cortex-r4 -mfloat-abi=hard -mfpu=vfpv3-d16)
 target_link_options(platform_tms570 INTERFACE
     -mcpu=cortex-r4 -mfloat-abi=hard -mfpu=vfpv3-d16)
+
+set(TMS570_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker/tms570.ld")
+add_library(linker_tms570 INTERFACE)
+target_link_options(linker_tms570 INTERFACE "-Wl,-T${TMS570_LINKER_SCRIPT}")
+set_property(TARGET linker_tms570 APPEND PROPERTY
+    INTERFACE_LINK_DEPENDS "${TMS570_LINKER_SCRIPT}")
 ```
 
-### Generic wrappers with explicit platform parameter
+### Platform-specific wrappers
+
+With hardcoded linker scripts per platform, each platform gets its own wrappers:
 
 ```cmake
-function(platform_add_library target_name)
-    cmake_parse_arguments(P "" "PLATFORM" "SOURCES" ${ARGN})
+# cmake/Platform_AM243x.cmake (continued)
 
-    if(NOT P_PLATFORM)
-        message(FATAL_ERROR "platform_add_library: PLATFORM is required")
-    endif()
-
-    add_library(${target_name} STATIC ${P_SOURCES})
-    target_link_libraries(${target_name} PRIVATE ${P_PLATFORM})
+function(am243x_add_library target_name)
+    add_library(${target_name} ${ARGN})
+    target_link_libraries(${target_name} PRIVATE platform_am243x)
 endfunction()
 
-function(platform_add_executable target_name)
-    cmake_parse_arguments(P "" "PLATFORM;LINKER_SCRIPT" "SOURCES" ${ARGN})
-
-    if(NOT P_PLATFORM)
-        message(FATAL_ERROR "platform_add_executable: PLATFORM is required")
-    endif()
-    if(NOT P_LINKER_SCRIPT)
-        message(FATAL_ERROR "platform_add_executable: LINKER_SCRIPT is required")
-    endif()
-
-    add_executable(${target_name} ${P_SOURCES})
-    target_link_libraries(${target_name} PRIVATE ${P_PLATFORM})
-
-    target_link_options(${target_name} PRIVATE
-        "-Wl,-T${P_LINKER_SCRIPT}"
-        "-Wl,-Map=$<TARGET_FILE_DIR:${target_name}>/${target_name}.map"
-    )
+function(am243x_add_executable target_name)
+    add_executable(${target_name} ${ARGN})
+    target_link_libraries(${target_name} PRIVATE platform_am243x linker_am243x)
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_LINKER_SCRIPT TRUE)
 endfunction()
 ```
+
+```cmake
+# cmake/Platform_TMS570.cmake (continued)
+
+function(tms570_add_library target_name)
+    add_library(${target_name} ${ARGN})
+    target_link_libraries(${target_name} PRIVATE platform_tms570)
+endfunction()
+
+function(tms570_add_executable target_name)
+    add_executable(${target_name} ${ARGN})
+    target_link_libraries(${target_name} PRIVATE platform_tms570 linker_tms570)
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_LINKER_SCRIPT TRUE)
+endfunction()
+```
+
+The validation function catches any executable missing the property, regardless of which platform it should have used.
 
 ### Usage
 
 ```cmake
 include(cmake/Platform_AM243x.cmake)
 include(cmake/Platform_TMS570.cmake)
-include(cmake/PlatformWrappers.cmake)
 
-# Library for AM243x
-platform_add_library(mylib_am243x
-    PLATFORM platform_am243x
-    SOURCES src/mylib.c
-)
-
-# Library for TMS570
-platform_add_library(mylib_tms570
-    PLATFORM platform_tms570
-    SOURCES src/mylib.c
-)
+# Libraries
+am243x_add_library(mylib_am243x STATIC src/mylib.c)
+tms570_add_library(mylib_tms570 STATIC src/mylib.c)
 
 # Executables
-platform_add_executable(firmware_am243x
-    PLATFORM platform_am243x
-    LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/linker/am243x.ld
-    SOURCES src/main.c
-)
-
-platform_add_executable(firmware_tms570
-    PLATFORM platform_tms570
-    LINKER_SCRIPT ${CMAKE_SOURCE_DIR}/linker/tms570.ld
-    SOURCES src/main.c
-)
+am243x_add_executable(firmware_am243x src/main.c)
+tms570_add_executable(firmware_tms570 src/main.c)
 
 target_link_libraries(firmware_am243x PRIVATE mylib_am243x)
 target_link_libraries(firmware_tms570 PRIVATE mylib_tms570)
@@ -372,16 +483,64 @@ With `PLATFORM` as a required parameter:
 
 | Scenario | Library wrapper? | Executable wrapper? |
 |----------|------------------|---------------------|
-| Case 1: Single platform in toolchain | No | Yes (linker script, map, post-build) |
-| Case 2: Platform outside toolchain | Yes (platform flags) | Yes (platform + linker script + map) |
-| Case 3: Multiple platforms | Yes (explicit platform) | Yes (explicit platform + linker script) |
+| Case 1: Single platform in toolchain | No | Yes (linker script) |
+| Case 2: Platform outside toolchain | Yes (platform flags) | Yes (platform + linker script) |
+| Case 3: Multiple platforms | Yes (per-platform flags) | Yes (per-platform flags + linker script) |
 
 ---
 
 ## Closing Note
 
-Whether you use Approach A or Approach B from Post #1, you'll end up wanting an `add_executable` wrapper. Linker scripts, map files, and post-build steps are per-executable concerns that don't belong scattered across CMakeLists files.
+Whether you use Approach A or Approach B from Post #1, you'll end up wanting an `add_executable` wrapper. The linker script is a per-executable concern that doesn't belong scattered across CMakeLists files.
 
 The difference is whether you also need `add_library` wrappers — and that depends entirely on where your platform flags live.
 
 Start with Case 1 if it fits your project. Move to Case 2 or 3 when you actually need the flexibility. Premature generalization in build systems creates maintenance burden without payoff.
+
+---
+
+## Addendum: Extending the Minimal Wrapper
+
+The wrappers above are intentionally minimal — just enough to produce a runnable binary. In practice, you'll want more.
+
+### Map files
+
+A map file shows memory usage, symbol addresses, and section sizes. Essential for debugging hard faults and tracking flash/RAM consumption:
+
+```cmake
+function(embedded_add_executable target_name)
+    add_executable(${target_name} ${ARGN})
+    target_link_libraries(${target_name} PRIVATE device_linker_script)
+
+    # Add map file generation
+    target_link_options(${target_name} PRIVATE
+        "-Wl,-Map=$<TARGET_FILE_DIR:${target_name}>/${target_name}.map"
+    )
+endfunction()
+```
+
+### Binary conversion
+
+Most flash tools want `.bin` or `.hex`, not ELF:
+
+```cmake
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} -O binary
+            $<TARGET_FILE:${target_name}>
+            $<TARGET_FILE_DIR:${target_name}>/${target_name}.bin
+        COMMENT "Generating ${target_name}.bin"
+    )
+```
+
+### Size report
+
+Print flash/RAM usage after every build:
+
+```cmake
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${target_name}>
+        COMMENT "Size of ${target_name}:"
+    )
+```
+
+These extras will be covered in detail in a future post.
