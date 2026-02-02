@@ -288,15 +288,13 @@ Now you need wrappers for **both** `add_library` and `add_executable`.
 
 ### Why libraries need wrappers now
 
-Without platform flags in the toolchain, a naked `add_library()` compiles with... whatever the compiler defaults to. That's not a contract. That's an accident.
+Without platform flags in the toolchain, a naked `add_library()` compiles with whatever the compiler defaults to. That's not a contract. That's an accident.
 
-If library A is compiled without `-mfloat-abi=hard` and executable B (which links A) is compiled with it, you get:
+If library A is compiled without `-mfloat-abi=hard` and executable B (which links A) is compiled with it, the linker will *most probably* detect the mismatch. But "most probably" is not "always". For example, ARM Cortex-R4 and Cortex-R5 have compatible ABIs — mixing them may go unnoticed at link time. The binary might even work at runtime. But "might work" is not a foundation for reliable firmware.
 
-* a successful build
-* ABI mismatch at runtime
-* mysterious crashes, wrong values, silent corruption
-
-The linker often won't catch this. The symptoms appear at runtime.
+> **Note on library types:** This post focuses on `STATIC` libraries for simplicity. In embedded projects, static libraries cover the vast majority of use cases. If you need `SHARED`, `OBJECT`, or `MODULE` libraries, extend the wrapper to parse the library type argument — but you'll rarely need to.
+>
+> `INTERFACE` libraries are safe without wrappers — they don't compile any sources, so there's nothing to miscompile.
 
 ### The platform target (from Post #1)
 
@@ -319,8 +317,11 @@ target_link_options(platform_am243x INTERFACE ${AM243X_FLAGS})
 
 ```cmake
 function(am243x_add_library target_name)
-    add_library(${target_name} ${ARGN})
+    add_library(${target_name} STATIC ${ARGN})
     target_link_libraries(${target_name} PRIVATE platform_am243x)
+
+    # Mark this library as having platform flags
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
 endfunction()
 ```
 
@@ -346,24 +347,66 @@ function(am243x_add_executable target_name)
     add_executable(${target_name} ${ARGN})
     target_link_libraries(${target_name} PRIVATE platform_am243x linker_am243x)
 
-    # Safety net (same pattern as Case 1)
+    # Safety net
     set_property(TARGET ${target_name} PROPERTY EMB_HAS_LINKER_SCRIPT TRUE)
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
 endfunction()
 ```
 
-The same `emb_validate_all_executables_have_linker_script()` function from Case 1 catches any naked `add_executable()` calls.
+### The extended safety net: validating libraries too
+
+In Case 2, we must validate both executables and libraries. A naked `add_library()` without platform flags is just as dangerous as a naked `add_executable()` without a linker script.
+
+```cmake
+# cmake/ValidatePlatformTargets.cmake
+
+function(emb_validate_all_targets_have_platform)
+    get_property(targets DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY BUILDSYSTEM_TARGETS)
+
+    foreach(target IN LISTS targets)
+        get_target_property(target_type ${target} TYPE)
+
+        # Check executables for linker script
+        if(target_type STREQUAL "EXECUTABLE")
+            get_target_property(has_linker_script ${target} EMB_HAS_LINKER_SCRIPT)
+            if(NOT has_linker_script)
+                message(FATAL_ERROR
+                    "Executable '${target}' does not have a linker script.\n"
+                    "Use am243x_add_executable() instead of add_executable().")
+            endif()
+        endif()
+
+        # Check libraries for platform flags (STATIC, SHARED, OBJECT, MODULE)
+        if(target_type MATCHES "^(STATIC_LIBRARY|SHARED_LIBRARY|OBJECT_LIBRARY|MODULE_LIBRARY)$")
+            get_target_property(has_platform ${target} EMB_HAS_PLATFORM)
+            if(NOT has_platform)
+                message(FATAL_ERROR
+                    "Library '${target}' (${target_type}) does not have platform flags.\n"
+                    "Use am243x_add_library() instead of add_library().\n"
+                    "Without platform flags, the library may have ABI mismatches.")
+            endif()
+        endif()
+
+        # INTERFACE libraries are safe — they don't compile sources
+    endforeach()
+endfunction()
+```
 
 ### Usage
 
 ```cmake
 include(cmake/Platform_AM243x.cmake)
+include(cmake/ValidatePlatformTargets.cmake)
 
-am243x_add_library(mylib STATIC src/mylib.c)
+am243x_add_library(mylib src/mylib.c)
 am243x_add_executable(firmware src/main.c)
 target_link_libraries(firmware PRIVATE mylib)
+
+# Validate at the end — catches naked add_library() and add_executable() calls
+emb_validate_all_targets_have_platform()
 ```
 
-Both the library and executable now have the platform contract.
+Both the library and executable now have the platform contract, and the validator ensures nothing slips through.
 
 ---
 
@@ -423,14 +466,16 @@ With hardcoded linker scripts per platform, each platform gets its own wrappers:
 # cmake/Platform_AM243x.cmake (continued)
 
 function(am243x_add_library target_name)
-    add_library(${target_name} ${ARGN})
+    add_library(${target_name} STATIC ${ARGN})
     target_link_libraries(${target_name} PRIVATE platform_am243x)
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
 endfunction()
 
 function(am243x_add_executable target_name)
     add_executable(${target_name} ${ARGN})
     target_link_libraries(${target_name} PRIVATE platform_am243x linker_am243x)
     set_property(TARGET ${target_name} PROPERTY EMB_HAS_LINKER_SCRIPT TRUE)
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
 endfunction()
 ```
 
@@ -438,28 +483,31 @@ endfunction()
 # cmake/Platform_TMS570.cmake (continued)
 
 function(tms570_add_library target_name)
-    add_library(${target_name} ${ARGN})
+    add_library(${target_name} STATIC ${ARGN})
     target_link_libraries(${target_name} PRIVATE platform_tms570)
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
 endfunction()
 
 function(tms570_add_executable target_name)
     add_executable(${target_name} ${ARGN})
     target_link_libraries(${target_name} PRIVATE platform_tms570 linker_tms570)
     set_property(TARGET ${target_name} PROPERTY EMB_HAS_LINKER_SCRIPT TRUE)
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
 endfunction()
 ```
 
-The validation function catches any executable missing the property, regardless of which platform it should have used.
+The `emb_validate_all_targets_have_platform()` function catches any target missing the properties, regardless of which platform it should have used.
 
 ### Usage
 
 ```cmake
 include(cmake/Platform_AM243x.cmake)
 include(cmake/Platform_TMS570.cmake)
+include(cmake/ValidatePlatformTargets.cmake)
 
 # Libraries
-am243x_add_library(mylib_am243x STATIC src/mylib.c)
-tms570_add_library(mylib_tms570 STATIC src/mylib.c)
+am243x_add_library(mylib_am243x src/mylib.c)
+tms570_add_library(mylib_tms570 src/mylib.c)
 
 # Executables
 am243x_add_executable(firmware_am243x src/main.c)
@@ -467,6 +515,9 @@ tms570_add_executable(firmware_tms570 src/main.c)
 
 target_link_libraries(firmware_am243x PRIVATE mylib_am243x)
 target_link_libraries(firmware_tms570 PRIVATE mylib_tms570)
+
+# Validate all targets
+emb_validate_all_targets_have_platform()
 ```
 
 ### The enforcement benefit
