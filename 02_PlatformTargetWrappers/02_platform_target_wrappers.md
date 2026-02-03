@@ -124,23 +124,25 @@ function(embedded_add_executable target_name)
     add_executable(${target_name} ${ARGN})
     target_link_libraries(${target_name} PRIVATE device_linker_script)
 
-    # Mark this executable as having a proper linker script
-    set_property(TARGET ${target_name} PROPERTY EMB_HAS_LINKER_SCRIPT TRUE)
+    # Mark this executable as targeting embedded
+    set_property(TARGET ${target_name} PROPERTY EMB_IS_EXECUTABLE TRUE)
 endfunction()
 ```
 
 That's the minimum. The linker script is applied, and changes to it trigger a relink.
 
+> **Note:** This wrapper is intentionally minimal. See the [Addendum](#addendum-extending-the-minimal-wrapper) at the end for useful extras: map files, binary conversion, size reports.
+
 ### The safety net: catching naked executables
 
 What if someone uses `add_executable()` directly, bypassing the wrapper? The build succeeds, but the binary uses the compiler's default linker script — which almost certainly doesn't match your device's memory layout.
 
-Add a validation function that runs at the end of configuration:
+Add a validation function (in the same file as the wrapper):
 
 ```cmake
-# cmake/ValidateLinkerScripts.cmake
+# cmake/EmbeddedExecutable.cmake (continued)
 
-function(emb_validate_all_executables_have_linker_script)
+function(emb_validate_all_executables)
     get_property(targets DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY BUILDSYSTEM_TARGETS)
 
     foreach(target IN LISTS targets)
@@ -149,13 +151,11 @@ function(emb_validate_all_executables_have_linker_script)
             continue()
         endif()
 
-        get_target_property(has_linker_script ${target} EMB_HAS_LINKER_SCRIPT)
-        if(NOT has_linker_script)
+        get_target_property(is_emb_executable ${target} EMB_IS_EXECUTABLE)
+        if(NOT is_emb_executable)
             message(FATAL_ERROR
-                "Executable '${target}' does not have a linker script.\n"
-                "Use embedded_add_executable() instead of add_executable().\n"
-                "Without a linker script, the binary will use compiler defaults "
-                "and likely won't run on your device.")
+                "Executable '${target}' is not targeting embedded.\n"
+                "Use embedded_add_executable() instead of add_executable().")
         endif()
     endforeach()
 endfunction()
@@ -170,7 +170,6 @@ cmake_minimum_required(VERSION 3.20)
 project(MyFirmware C)
 
 include(cmake/EmbeddedExecutable.cmake)
-include(cmake/ValidateLinkerScripts.cmake)
 
 add_library(mylib STATIC src/mylib.c)
 
@@ -178,7 +177,7 @@ embedded_add_executable(firmware src/main.c)
 target_link_libraries(firmware PRIVATE mylib)
 
 # Validate at the end — catches any naked add_executable() calls
-emb_validate_all_executables_have_linker_script()
+emb_validate_all_executables()
 ```
 
 Now if someone adds:
@@ -190,14 +189,15 @@ add_executable(test_app src/test.c)  # Forgot the wrapper!
 Configuration fails immediately:
 
 ```
-CMake Error at cmake/ValidateLinkerScripts.cmake:15 (message):
-  Executable 'test_app' does not have a linker script.
+CMake Error at cmake/EmbeddedExecutable.cmake:22 (message):
+  Executable 'test_app' is not targeting embedded.
   Use embedded_add_executable() instead of add_executable().
-  Without a linker script, the binary will use compiler defaults and likely
-  won't run on your device.
 ```
 
 No silent failures. No binaries with wrong memory layouts.
+
+
+> **Note:** We don't need a separate validator for the linker script here — the wrapper handles everything in one function. In Case 3, where we split executable creation from linker script linking, we'll need two separate validators.
 
 ### Usage
 
@@ -210,6 +210,11 @@ add_library(mylib STATIC src/mylib.c)
 # Executables get the linker script automatically
 embedded_add_executable(firmware src/main.c)
 target_link_libraries(firmware PRIVATE mylib)
+
+# add_subdirectory() calls, add more executables etc. ...
+
+# Validate at the end of the root CMakeLists.txt
+emb_validate_all_executables()
 ```
 
 ### Why this structure matters
@@ -234,40 +239,6 @@ $ make
 
 The relink happens automatically. No stale binaries.
 
-### Why linker scripts belong in a target
-
-A linker script defines the memory layout:
-
-* where code goes (flash regions)
-* where data goes (RAM regions)
-* stack and heap placement
-* interrupt vector table location
-
-Without a linker script, the linker uses defaults that make no sense for your MCU. The binary might link, but it won't run.
-
-Modeling the linker script as an INTERFACE target means:
-
-* you cannot forget it (the wrapper links it automatically)
-* every executable gets the correct memory layout
-* changing the linker script triggers a relink
-* multiple executables share the same linker script target
-
-### Why map files belong in a wrapper
-
-A map file shows:
-
-* final memory usage (flash/RAM)
-* symbol addresses
-* section sizes
-* what got linked and from where
-
-For embedded development, this is not optional debug output. It's how you:
-
-* verify you're not overflowing flash
-* debug hard faults (look up addresses)
-* optimize size (find the bloat)
-
-Generating it automatically in the wrapper means it's always there when you need it.
 
 ### Why you don't need `add_library` wrappers in Case 1
 

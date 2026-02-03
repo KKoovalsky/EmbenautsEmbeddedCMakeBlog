@@ -4,6 +4,8 @@
 
 #include <stdint.h>
 
+extern int mylib_getSomeValue();
+
 /* Simple delay */
 static void delay(volatile uint32_t count)
 {
@@ -15,7 +17,7 @@ static void delay(volatile uint32_t count)
 /* Main application */
 int main(void)
 {
-    volatile uint32_t counter = 0;
+    volatile uint32_t counter = mylib_getSomeValue();
 
     while (1) {
         counter++;

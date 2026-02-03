@@ -1,7 +1,7 @@
 # DeviceLinkerScript.cmake
 # Creates an INTERFACE target for the device linker script
 
-set(DEVICE_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/Linker/Device.ld")
+set(DEVICE_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker/device.ld")
 
 add_library(device_linker_script INTERFACE)
 

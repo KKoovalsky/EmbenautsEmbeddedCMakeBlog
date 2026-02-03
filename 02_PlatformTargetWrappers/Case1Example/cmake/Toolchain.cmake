@@ -46,5 +46,3 @@ set(CMAKE_FIND_ROOT_PATH_MODE_PACKAGE ONLY)
 set(CMAKE_C_FLAGS_INIT "-mcpu=cortex-r5 -mfloat-abi=hard -mfpu=vfpv3-d16")
 set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT}")
 
-# Common embedded flags
-string(APPEND CMAKE_C_FLAGS_INIT " -ffunction-sections -fdata-sections")
