@@ -196,7 +196,6 @@ CMake Error at cmake/EmbeddedExecutable.cmake:22 (message):
 
 No silent failures. No binaries with wrong memory layouts.
 
-
 > **Note:** We don't need a separate validator for the linker script here — the wrapper handles everything in one function. In Case 3, where we split executable creation from linker script linking, we'll need two separate validators.
 
 ### Usage
@@ -264,7 +263,7 @@ Without platform flags in the toolchain, a naked `add_library()` compiles with w
 
 If library A is compiled without `-mfloat-abi=hard` and executable B (which links A) is compiled with it, the linker will *most probably* detect the mismatch. But "most probably" is not "always". For example, ARM Cortex-R4 and Cortex-R5 have compatible ABIs — mixing them may go unnoticed at link time. The binary might even work at runtime. But "might work" is not a foundation for reliable firmware.
 
-> **Note on library types:** This post focuses on `STATIC` libraries for simplicity. In embedded projects, static libraries cover the vast majority of use cases. If you need `SHARED`, `OBJECT`, or `MODULE` libraries, extend the wrapper to parse the library type argument — but you'll rarely need to.
+> **Note on library types:** This post focuses on `STATIC` libraries for simplicity. In embedded projects, static libraries cover the majority of use cases. If you need `SHARED`, `OBJECT`, or `MODULE` libraries, extend the wrapper to parse the library type argument.
 >
 > `INTERFACE` libraries are safe without wrappers — they don't compile any sources, so there's nothing to miscompile.
 
@@ -320,7 +319,6 @@ function(am243x_add_executable target_name)
     target_link_libraries(${target_name} PRIVATE platform_am243x linker_am243x)
 
     # Safety net
-    set_property(TARGET ${target_name} PROPERTY EMB_HAS_LINKER_SCRIPT TRUE)
     set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
 endfunction()
 ```
@@ -338,23 +336,12 @@ function(emb_validate_all_targets_have_platform)
     foreach(target IN LISTS targets)
         get_target_property(target_type ${target} TYPE)
 
-        # Check executables for linker script
-        if(target_type STREQUAL "EXECUTABLE")
-            get_target_property(has_linker_script ${target} EMB_HAS_LINKER_SCRIPT)
-            if(NOT has_linker_script)
-                message(FATAL_ERROR
-                    "Executable '${target}' does not have a linker script.\n"
-                    "Use am243x_add_executable() instead of add_executable().")
-            endif()
-        endif()
-
-        # Check libraries for platform flags (STATIC, SHARED, OBJECT, MODULE)
-        if(target_type MATCHES "^(STATIC_LIBRARY|SHARED_LIBRARY|OBJECT_LIBRARY|MODULE_LIBRARY)$")
+        if(target_type MATCHES "^(EXECUTABLE|STATIC_LIBRARY|SHARED_LIBRARY|OBJECT_LIBRARY|MODULE_LIBRARY)$")
             get_target_property(has_platform ${target} EMB_HAS_PLATFORM)
             if(NOT has_platform)
                 message(FATAL_ERROR
-                    "Library '${target}' (${target_type}) does not have platform flags.\n"
-                    "Use am243x_add_library() instead of add_library().\n"
+                    "Target '${target}' (${target_type}) does not have platform flags.\n"
+                    "Use am243x_add_*() wrappers instead of bare add_library() or add_executable()\n"
                     "Without platform flags, the library may have ABI mismatches.")
             endif()
         endif()
@@ -363,6 +350,8 @@ function(emb_validate_all_targets_have_platform)
     endforeach()
 endfunction()
 ```
+
+> **Note on IMPORTED targets:** With a single platform, there's no need to validate IMPORTED targets — they can only link against one platform anyway. The developer adding an IMPORTED library is responsible for ensuring it was cross-compiled for the correct platform. In Case 3 (multiple platforms), we'll add validation to catch platform mismatches.
 
 ### Usage
 
