@@ -383,7 +383,9 @@ This is where Approach B pays off. You have:
 
 Each combination needs its own platform flags and linker script. With 2 platforms × 2 linker scripts each, hardcoding combinations in wrapper names leads to combinatorial explosion. Instead, we separate executable creation from linker script linking.
 
-### Platform targets
+### Platform targets (the long way)
+
+First, let's see what a platform target looks like expanded:
 
 ```cmake
 # cmake/Platform_AM243x.cmake
@@ -424,7 +426,77 @@ set_property(TARGET platform_tms570 APPEND PROPERTY
     COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
 ```
 
-The `COMPATIBLE_INTERFACE_STRING` property tells CMake: all targets linked together must agree on the `EMB_PLATFORM` value. Mixing platforms fails at generation time.
+That's verbose. We'll create a helper function shortly, but first let's understand the key mechanism.
+
+#### How `COMPATIBLE_INTERFACE_STRING` works
+
+When you set `COMPATIBLE_INTERFACE_STRING` on a target, you're telling CMake: "this property must have the same value across all linked targets."
+
+Here's what happens:
+
+1. **Property propagation:** When target A links target B, CMake looks at B's `INTERFACE_EMB_PLATFORM` property and propagates it to A.
+
+2. **Consistency check:** If A links multiple targets (B and C), CMake verifies that all `INTERFACE_EMB_PLATFORM` values match. If B says "AM243x" and C says "TMS570", CMake fails at generation time.
+
+3. **The "head" target wins:** The linking target (executable or library doing the linking) can also set `EMB_PLATFORM` directly. If it does, all dependencies must agree with that value.
+
+This is a built-in CMake mechanism — no custom validation code needed. The check happens automatically during the generation phase, before any compilation starts.
+
+Other compatible interface properties:
+- `COMPATIBLE_INTERFACE_BOOL` — all values must be the same boolean
+- `COMPATIBLE_INTERFACE_NUMBER_MIN` — take the minimum value
+- `COMPATIBLE_INTERFACE_NUMBER_MAX` — take the maximum value
+
+We use `STRING` because platform names are strings that must match exactly.
+
+**Important caveat:** If a target doesn't set the property at all, it silently passes the compatibility check — CMake only compares targets that *have* the property. This is why we still need a separate validator: to ensure all relevant targets actually have `EMB_PLATFORM` set in the first place.
+
+### Platform helper function
+
+Instead of repeating the platform setup for each MCU, use a helper function:
+
+```cmake
+# cmake/EmbeddedPlatform.cmake
+
+function(emb_add_platform target_name platform_id)
+    add_library(${target_name} INTERFACE)
+
+    # Remaining arguments are compiler/linker flags
+    set(flags ${ARGN})
+    target_compile_options(${target_name} INTERFACE ${flags})
+    target_link_options(${target_name} INTERFACE ${flags})
+
+    # Tag with platform for compatibility checking
+    set_property(TARGET ${target_name} PROPERTY
+        INTERFACE_EMB_PLATFORM "${platform_id}")
+    set_property(TARGET ${target_name} APPEND PROPERTY
+        COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
+endfunction()
+```
+
+Now platform definitions become one-liners:
+
+```cmake
+# cmake/Platform_AM243x.cmake
+include(${CMAKE_CURRENT_LIST_DIR}/EmbeddedPlatform.cmake)
+
+emb_add_platform(platform_am243x "AM243x"
+    -mcpu=cortex-r5
+    -mfloat-abi=hard
+    -mfpu=vfpv3-d16
+)
+```
+
+```cmake
+# cmake/Platform_TMS570.cmake
+include(${CMAKE_CURRENT_LIST_DIR}/EmbeddedPlatform.cmake)
+
+emb_add_platform(platform_tms570 "TMS570"
+    -mcpu=cortex-r4
+    -mfloat-abi=hard
+    -mfpu=vfpv3-d16
+)
+```
 
 ### Linker script targets
 
@@ -434,6 +506,7 @@ A helper function creates linker script targets with the correct platform tag:
 # cmake/EmbeddedLinkerScript.cmake
 
 function(emb_add_linker_script target_name platform_name linker_script_path)
+    # NOTE: You might want to validate if the linker_script_path is absolute
     add_library(${target_name} INTERFACE)
     target_link_options(${target_name} INTERFACE "-Wl,-T${linker_script_path}")
     set_property(TARGET ${target_name} APPEND PROPERTY
@@ -476,53 +549,68 @@ emb_add_linker_script(linker_tms570_external
     "${CMAKE_SOURCE_DIR}/linker/tms570_external.ld")
 ```
 
-### Platform-specific wrappers
+### Generic target wrappers
 
-The wrappers create targets with platform flags. Linker scripts are linked separately via `target_link_libraries()`:
+Instead of duplicating wrapper logic per platform, create generic wrappers that take the platform target as a parameter:
+
+```cmake
+# cmake/EmbeddedTargets.cmake
+
+function(emb_add_library platform_target target_name)
+    add_library(${target_name} STATIC ${ARGN})
+    target_link_libraries(${target_name} PRIVATE ${platform_target})
+
+    # Get platform ID from the platform target
+    get_target_property(platform_id ${platform_target} INTERFACE_EMB_PLATFORM)
+
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
+    set_property(TARGET ${target_name} PROPERTY EMB_PLATFORM "${platform_id}")
+    set_property(TARGET ${target_name} APPEND PROPERTY
+        COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
+endfunction()
+
+function(emb_add_executable platform_target target_name)
+    add_executable(${target_name} ${ARGN})
+    target_link_libraries(${target_name} PRIVATE ${platform_target})
+
+    get_target_property(platform_id ${platform_target} INTERFACE_EMB_PLATFORM)
+
+    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
+    set_property(TARGET ${target_name} PROPERTY EMB_PLATFORM "${platform_id}")
+    set_property(TARGET ${target_name} APPEND PROPERTY
+        COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
+endfunction()
+```
+
+### Platform-specific aliases
+
+Each platform file creates convenient aliases:
 
 ```cmake
 # cmake/Platform_AM243x.cmake (continued)
 
-function(am243x_add_library target_name)
-    add_library(${target_name} STATIC ${ARGN})
-    target_link_libraries(${target_name} PRIVATE platform_am243x)
-    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
-    set_property(TARGET ${target_name} PROPERTY EMB_PLATFORM "AM243x")
-    set_property(TARGET ${target_name} APPEND PROPERTY
-        COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
-endfunction()
+macro(am243x_add_library target_name)
+    emb_add_library(platform_am243x ${target_name} ${ARGN})
+endmacro()
 
-function(am243x_add_executable target_name)
-    add_executable(${target_name} ${ARGN})
-    target_link_libraries(${target_name} PRIVATE platform_am243x)
-    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
-    set_property(TARGET ${target_name} PROPERTY EMB_PLATFORM "AM243x")
-    set_property(TARGET ${target_name} APPEND PROPERTY
-        COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
-endfunction()
+macro(am243x_add_executable target_name)
+    emb_add_executable(platform_am243x ${target_name} ${ARGN})
+endmacro()
 ```
 
 ```cmake
 # cmake/Platform_TMS570.cmake (continued)
 
-function(tms570_add_library target_name)
-    add_library(${target_name} STATIC ${ARGN})
-    target_link_libraries(${target_name} PRIVATE platform_tms570)
-    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
-    set_property(TARGET ${target_name} PROPERTY EMB_PLATFORM "TMS570")
-    set_property(TARGET ${target_name} APPEND PROPERTY
-        COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
-endfunction()
+macro(tms570_add_library target_name)
+    emb_add_library(platform_tms570 ${target_name} ${ARGN})
+endmacro()
 
-function(tms570_add_executable target_name)
-    add_executable(${target_name} ${ARGN})
-    target_link_libraries(${target_name} PRIVATE platform_tms570)
-    set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
-    set_property(TARGET ${target_name} PROPERTY EMB_PLATFORM "TMS570")
-    set_property(TARGET ${target_name} APPEND PROPERTY
-        COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
-endfunction()
+macro(tms570_add_executable target_name)
+    emb_add_executable(platform_tms570 ${target_name} ${ARGN})
+endmacro()
 ```
+
+Now adding a new platform is just: define the platform target, define the linker scripts, create two one-line macros.
 
 ### Linking linker scripts
 
@@ -552,8 +640,9 @@ Split the validation into two functions: one for platform flags, one for linker 
 
 function(emb_validate_all_targets_have_platform)
     get_property(targets DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY BUILDSYSTEM_TARGETS)
+    get_property(importedTargets DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY IMPORTED_TARGETS)
 
-    foreach(target IN LISTS targets)
+    foreach(target IN LISTS targets) importedTargets
         get_target_property(target_type ${target} TYPE)
 
         # Check compiled targets (STATIC, SHARED, OBJECT, MODULE, EXECUTABLE)
@@ -566,18 +655,6 @@ function(emb_validate_all_targets_have_platform)
             endif()
         endif()
 
-        # Check IMPORTED targets
-        if(target_type MATCHES "^(STATIC_LIBRARY|SHARED_LIBRARY)$")
-            get_target_property(is_imported ${target} IMPORTED)
-            if(is_imported)
-                get_target_property(has_platform ${target} EMB_HAS_PLATFORM)
-                if(NOT has_platform)
-                    message(FATAL_ERROR
-                        "IMPORTED target '${target}' does not have EMB_HAS_PLATFORM set.\n"
-                        "Set the property manually or use a wrapper for IMPORTED libraries.")
-                endif()
-            endif()
-        endif()
     endforeach()
 endfunction()
 ```
@@ -597,20 +674,20 @@ function(emb_validate_all_executables_have_linker_script)
         endif()
 
         # Check if any directly linked target is a linker script
+        # NOTE: In case you link the linker script indirectly, you would need to traverse the indirect dependencies
+        #       against INTERFACE dependencies, to check if the linker script is linked.
         get_target_property(linked_libs ${target} LINK_LIBRARIES)
         set(has_linker_script FALSE)
 
-        if(linked_libs)
-            foreach(lib IN LISTS linked_libs)
-                if(TARGET ${lib})
-                    get_target_property(is_linker_script ${lib} EMB_IS_LINKER_SCRIPT)
-                    if(is_linker_script)
-                        set(has_linker_script TRUE)
-                        break()
-                    endif()
+        foreach(lib IN LISTS linked_libs)
+            if(TARGET ${lib})
+                get_target_property(is_linker_script ${lib} EMB_IS_LINKER_SCRIPT)
+                if(is_linker_script)
+                    set(has_linker_script TRUE)
+                    break()
                 endif()
-            endforeach()
-        endif()
+            endif()
+        endforeach()
 
         if(NOT has_linker_script)
             message(FATAL_ERROR
