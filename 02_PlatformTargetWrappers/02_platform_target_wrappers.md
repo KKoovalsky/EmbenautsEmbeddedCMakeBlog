@@ -1,6 +1,6 @@
-# Platform Target Wrappers in CMake (Embedded)
+# CMake for Embedded: Why add_executable() Needs a Platform Contract
 
-## Why You Need `add_executable` and `add_library` Wrappers for Embedded Targets
+## How wrappers and validation turn conventions into compile-time guarantees
 
 > This post is a direct continuation of **Post #1**.
 > Post #1 established two coherent structures:
