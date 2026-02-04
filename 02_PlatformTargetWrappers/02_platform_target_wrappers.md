@@ -99,8 +99,9 @@ set(DEVICE_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker/device.ld")
 
 add_library(device_linker_script INTERFACE)
 
+# TI linker uses different flag syntax
 target_link_options(device_linker_script INTERFACE
-    "-Wl,-T${DEVICE_LINKER_SCRIPT}"
+    "-Wl,${DEVICE_LINKER_SCRIPT}"
 )
 
 # Critical: relink when linker script changes
@@ -308,7 +309,7 @@ Same pattern as Case 1 — the linker script gets its own target with `INTERFACE
 set(AM243X_LINKER_SCRIPT "${CMAKE_SOURCE_DIR}/linker/am243x.ld")
 
 add_library(linker_am243x INTERFACE)
-target_link_options(linker_am243x INTERFACE "-Wl,-T${AM243X_LINKER_SCRIPT}")
+target_link_options(linker_am243x INTERFACE "-Wl,${AM243X_LINKER_SCRIPT}")
 set_property(TARGET linker_am243x APPEND PROPERTY
     INTERFACE_LINK_DEPENDS "${AM243X_LINKER_SCRIPT}")
 ```
@@ -510,9 +511,8 @@ A helper function creates linker script targets with the correct platform tag:
 # cmake/EmbeddedLinkerScript.cmake
 
 function(emb_add_linker_script target_name platform_name linker_script_path)
-    # NOTE: You might want to validate if the linker_script_path is absolute
     add_library(${target_name} INTERFACE)
-    target_link_options(${target_name} INTERFACE "-Wl,-T${linker_script_path}")
+    target_link_options(${target_name} INTERFACE "-Wl,${linker_script_path}")
     set_property(TARGET ${target_name} APPEND PROPERTY
         INTERFACE_LINK_DEPENDS "${linker_script_path}")
 
@@ -569,6 +569,8 @@ function(emb_add_library platform_target target_name)
 
     set_property(TARGET ${target_name} PROPERTY EMB_HAS_PLATFORM TRUE)
     set_property(TARGET ${target_name} PROPERTY EMB_PLATFORM "${platform_id}")
+    # INTERFACE_EMB_PLATFORM is needed for consumers to see the platform ID
+    set_property(TARGET ${target_name} PROPERTY INTERFACE_EMB_PLATFORM "${platform_id}")
     set_property(TARGET ${target_name} APPEND PROPERTY
         COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
 endfunction()
@@ -628,9 +630,8 @@ target_link_libraries(firmware PRIVATE linker_am243x_internal)
 If you try to link a TMS570 linker script to an AM243x executable, CMake fails at generation time:
 
 ```
-CMake Error: The INTERFACE_EMB_PLATFORM property of "linker_tms570_internal"
-does not agree with the value of EMB_PLATFORM already determined for
-"firmware".
+CMake Error: Property EMB_PLATFORM on target "firmware" does not match the
+INTERFACE_EMB_PLATFORM property requirement of dependency "linker_tms570_internal".
 ```
 
 ### Validation: two separate checks
@@ -759,7 +760,7 @@ This pattern provides three layers of safety:
 2. **Platform/linker compatibility** — `COMPATIBLE_INTERFACE_STRING` catches mismatches at generation time
 3. **Linker script presence** — validation catches forgotten `target_link_libraries()` calls
 
-> **Example:** See `Case3Example/` for a complete working example (coming soon).
+> **Example:** See [`Case3Example/`](Case3Example/) for a complete working example.
 
 ---
 
