@@ -32,6 +32,21 @@ find_program(CMAKE_C_COMPILER
 # For tiarmclang, C and C++ compilers are the same executable
 set(CMAKE_CXX_COMPILER ${CMAKE_C_COMPILER})
 
+# Find toolchain utilities
+find_program(CMAKE_OBJCOPY
+    NAMES tiarmobjcopy
+    HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
+    NO_DEFAULT_PATH
+    REQUIRED
+)
+
+find_program(CMAKE_SIZE
+    NAMES tiarmsize
+    HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
+    NO_DEFAULT_PATH
+    REQUIRED
+)
+
 # Configure try-compile for bare-metal targets
 set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
 

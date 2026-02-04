@@ -26,4 +26,31 @@ function(emb_add_executable platform_target target_name)
     set_property(TARGET ${target_name} PROPERTY EMB_PLATFORM "${platform_id}")
     set_property(TARGET ${target_name} APPEND PROPERTY
         COMPATIBLE_INTERFACE_STRING EMB_PLATFORM)
+
+    # Map file generation (TI linker syntax)
+    target_link_options(${target_name} PRIVATE
+        "-Wl,-m=$<TARGET_FILE_DIR:${target_name}>/${target_name}.map"
+    )
+
+    # Binary conversion: .bin (raw binary)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} -O binary
+            $<TARGET_FILE:${target_name}>
+            $<TARGET_FILE_DIR:${target_name}>/${target_name}.bin
+        COMMENT "Generating ${target_name}.bin"
+    )
+
+    # Binary conversion: .hex (Intel HEX)
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} -O ihex
+            $<TARGET_FILE:${target_name}>
+            $<TARGET_FILE_DIR:${target_name}>/${target_name}.hex
+        COMMENT "Generating ${target_name}.hex"
+    )
+
+    # Size report
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_SIZE} $<TARGET_FILE:${target_name}>
+        COMMENT "Size of ${target_name}:"
+    )
 endfunction()

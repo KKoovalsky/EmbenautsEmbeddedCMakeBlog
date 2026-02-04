@@ -788,6 +788,31 @@ Start with Case 1 if it fits your project. Move to Case 2 or 3 when you actually
 
 The wrappers above are intentionally minimal — just enough to produce a runnable binary. In practice, you'll want more.
 
+### Finding toolchain utilities
+
+CMake doesn't automatically find `objcopy` and `size` for cross toolchains. Add these to your toolchain file:
+
+```cmake
+# In your toolchain file (e.g., Toolchain.cmake)
+
+# For TI ARM Clang
+find_program(CMAKE_OBJCOPY
+    NAMES tiarmobjcopy
+    HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
+    REQUIRED
+)
+
+find_program(CMAKE_SIZE
+    NAMES tiarmsize
+    HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
+    REQUIRED
+)
+
+# For GNU ARM toolchain, use:
+# find_program(CMAKE_OBJCOPY NAMES arm-none-eabi-objcopy ...)
+# find_program(CMAKE_SIZE NAMES arm-none-eabi-size ...)
+```
+
 ### Map files
 
 A map file shows memory usage, symbol addresses, and section sizes. Essential for debugging hard faults and tracking flash/RAM consumption:
@@ -797,16 +822,18 @@ function(embedded_add_executable target_name)
     add_executable(${target_name} ${ARGN})
     target_link_libraries(${target_name} PRIVATE device_linker_script)
 
-    # Add map file generation
+    # Add map file generation (TI linker syntax)
     target_link_options(${target_name} PRIVATE
-        "-Wl,-Map=$<TARGET_FILE_DIR:${target_name}>/${target_name}.map"
+        "-Wl,-m=$<TARGET_FILE_DIR:${target_name}>/${target_name}.map"
     )
 endfunction()
 ```
 
 ### Binary conversion
 
-Most flash tools want `.bin` or `.hex`, not ELF:
+Most flash tools want `.bin` or `.hex`, not ELF.
+
+**`.bin`** — raw binary, no metadata, smallest size:
 
 ```cmake
     add_custom_command(TARGET ${target_name} POST_BUILD
@@ -816,6 +843,19 @@ Most flash tools want `.bin` or `.hex`, not ELF:
         COMMENT "Generating ${target_name}.bin"
     )
 ```
+
+**`.hex`** — Intel HEX format, includes addresses and checksums:
+
+```cmake
+    add_custom_command(TARGET ${target_name} POST_BUILD
+        COMMAND ${CMAKE_OBJCOPY} -O ihex
+            $<TARGET_FILE:${target_name}>
+            $<TARGET_FILE_DIR:${target_name}>/${target_name}.hex
+        COMMENT "Generating ${target_name}.hex"
+    )
+```
+
+Use `.bin` when the load address is known externally (bootloaders, OTA). Use `.hex` when the flash tool needs address information or you have non-contiguous memory regions.
 
 ### Size report
 
@@ -828,4 +868,4 @@ Print flash/RAM usage after every build:
     )
 ```
 
-These extras will be covered in detail in a future post.
+> **Example:** All these extras are implemented in [`Case3Example/`](Case3Example/).
