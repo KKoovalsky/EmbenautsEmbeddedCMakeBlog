@@ -249,6 +249,8 @@ With platform flags in the toolchain file, every library already compiles with t
 
 So in Case 1: **wrap executables, leave libraries alone**.
 
+> **Example:** See [`Case1Example/`](Case1Example/) for a complete working example.
+
 ---
 
 ## Case 2: Platform Configuration Outside the Toolchain File
@@ -370,6 +372,8 @@ emb_validate_all_targets_have_platform()
 Both the library and executable now have the platform contract, and the validator ensures nothing slips through.
 
 > **Need multiple linker scripts per platform?** See Case 3, which shows how to separate executable creation from linker script linking, with compile-time safety to prevent mismatches.
+
+> **Example:** See [`Case2Example/`](Case2Example/) for a complete working example.
 
 ---
 
@@ -754,6 +758,8 @@ This pattern provides three layers of safety:
 1. **Platform flags** — wrappers ensure every target compiles with correct flags
 2. **Platform/linker compatibility** — `COMPATIBLE_INTERFACE_STRING` catches mismatches at generation time
 3. **Linker script presence** — validation catches forgotten `target_link_libraries()` calls
+
+> **Example:** See `Case3Example/` for a complete working example (coming soon).
 
 ---
 
