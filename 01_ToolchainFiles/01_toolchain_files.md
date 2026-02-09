@@ -1,3 +1,9 @@
+---
+title: "CMake Toolchain Files in Embedded Projects"
+description: "Understanding toolchain files, platform configuration, and explicit failure modes for embedded cross-compilation with CMake."
+date: 2025-01-15
+---
+
 # CMake Toolchain Files in Embedded Projects
 
 ## Toolchain, Platform, and Explicit Failure Modes

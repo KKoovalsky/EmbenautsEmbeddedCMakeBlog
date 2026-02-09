@@ -1,3 +1,9 @@
+---
+title: "Platform Target Wrappers in CMake (Embedded)"
+description: "Creating minimal add_executable and add_library wrappers for embedded targets, with safety mechanisms and useful extras."
+date: 2025-01-20
+---
+
 # CMake for Embedded: Why add_executable() Needs a Platform Contract
 
 ## How wrappers and validation turn conventions into compile-time guarantees
