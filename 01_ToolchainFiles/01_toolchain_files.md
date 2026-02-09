@@ -468,3 +468,9 @@ If platform configuration is not in the toolchain file, the build system must ma
 Both approaches work in production systems. The critical part is not which one you choose, but that you understand the failure modes and make them explicit.
 
 A build system should not allow producing artifacts whose intended execution environment is undefined. Whether that enforcement is implicit (Approach A) or requires active discipline (Approach B) depends on your project's constraints and team structure.
+
+---
+
+**License**
+© 2026 Kacper Kowalski
+This article is licensed under **CC BY-NC-ND 4.0**.

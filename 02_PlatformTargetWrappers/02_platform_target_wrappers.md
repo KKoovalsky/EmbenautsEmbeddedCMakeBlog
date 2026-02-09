@@ -869,3 +869,9 @@ Print flash/RAM usage after every build:
 ```
 
 > **Example:** All these extras are implemented in [`Case3Example/`](Case3Example/).
+
+---
+
+**License**
+© 2026 Kacper Kowalski
+This article is licensed under **CC BY-NC-ND 4.0**.
