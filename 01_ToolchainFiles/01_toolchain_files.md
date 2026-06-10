@@ -1,7 +1,7 @@
 ---
 title: "CMake Toolchain Files in Embedded Projects"
-description: "Understanding toolchain files, platform configuration, and explicit failure modes for embedded cross-compilation with CMake."
-date: 2025-01-15
+description: "Structuring toolchain and platform configuration for bare-metal and RTOS firmware builds where CMake owns the full build."
+date: 2026-01-15
 ---
 
 # CMake Toolchain Files in Embedded Projects
@@ -136,6 +136,7 @@ list(APPEND CMAKE_TRY_COMPILE_PLATFORM_VARIABLES
 find_program(CMAKE_C_COMPILER
   NAMES tiarmclang
   HINTS "${TIARMCLANG_TOOLCHAIN_ROOT}/bin"
+  NO_DEFAULT_PATH
   REQUIRED
 )
 
@@ -199,7 +200,7 @@ set(CMAKE_CXX_FLAGS_INIT "${CMAKE_C_FLAGS_INIT}")
 * The project targets **exactly one platform**
 * There is no plan to support additional platforms later
 * All firmware artifacts share the same architecture
-* Reconfiguring the build when flags change is acceptable
+* A full clean and reconfigure cycle — with cache invalidation — is acceptable when flags change
 
 ### Consequences
 
@@ -393,7 +394,7 @@ This still depends on team discipline—code reviews or linting must catch direc
 
 ### Full Example
 
-The toolchain file for Approach B is nearly identical to the minimal toolchain file shown earlier. This is intentional—the toolchain file focuses purely on compiler setup without platform-specific concerns:
+The toolchain file for Approach B is nearly identical to the minimal toolchain file shown earlier. This is intentional — the toolchain file focuses purely on compiler setup without platform-specific concerns:
 
 ```cmake
 # cmake/toolchains/tiarmclang.toolchain.cmake
@@ -474,6 +475,8 @@ If platform configuration is not in the toolchain file, the build system must ma
 Both approaches work in production systems. The critical part is not which one you choose, but that you understand the failure modes and make them explicit.
 
 A build system should not allow producing artifacts whose intended execution environment is undefined. Whether that enforcement is implicit (Approach A) or requires active discipline (Approach B) depends on your project's constraints and team structure.
+
+**Next:** Post #2 — **Platform Target Wrappers** — takes the enforcement question further. It covers `add_executable` and `add_library` wrappers, linker script targets with proper rebuild tracking, and configuration-time validators that make missing platform bindings a hard build failure rather than a runtime surprise.
 
 ---
 
